@@ -351,7 +351,7 @@ def main():
             p.add_argument('--context', type=int)
             p.add_argument('--port', type=int, default=8793)
             p.add_argument('--mmproj', help='本地匹配的视觉投影；未指定时自动检查模型同目录')
-            p.add_argument('--no-vision', action='store_true', help='本次启动先关闭看图，可在页面重新开启')
+            p.add_argument('--no-vision', action='store_true', help='关闭看图启动，可在页面重新开启')
             p.add_argument('--no-open', action='store_true')
     doctor = commands.add_parser('doctor')
     doctor.add_argument('--model')

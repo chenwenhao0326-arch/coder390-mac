@@ -186,6 +186,16 @@ class HttpChecks(ControlChecks):
         status, _, _ = self.http_request('/_coder390/status', headers={'Host': 'untrusted.example'})
         self.assertEqual(status, 403)
 
+    def test_http_user_navigation_allowed_but_foreign_iframe_rejected(self):
+        headers = {'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate',
+                   'Sec-Fetch-Dest': 'document', 'Sec-Fetch-User': '?1'}
+        status, body, _ = self.http_request('/', headers=headers)
+        self.assertEqual(status, 200)
+        self.assertIn(b'/_coder390/settings.js', body)
+        headers['Sec-Fetch-Dest'] = 'iframe'
+        status, _, _ = self.http_request('/', headers=headers)
+        self.assertEqual(status, 403)
+
     def test_http_static_traversal_rejected(self):
         status, body, _ = self.http_request('/%2e%2e/secret')
         self.assertEqual(status, 404)

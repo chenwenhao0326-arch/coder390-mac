@@ -383,7 +383,11 @@ def handler_for(manager):
             origin = self.headers.get('Origin')
             if origin and origin != 'http://' + hosts[0]:
                 raise Rejected('Cross-origin request rejected', 403)
-            if self.headers.get('Sec-Fetch-Site') == 'cross-site':
+            user_navigation = (self.command in ('GET', 'HEAD') and
+                               self.headers.get('Sec-Fetch-Mode') == 'navigate' and
+                               self.headers.get('Sec-Fetch-Dest') == 'document' and
+                               self.headers.get('Sec-Fetch-User') == '?1')
+            if self.headers.get('Sec-Fetch-Site') == 'cross-site' and not user_navigation:
                 raise Rejected('Cross-site request rejected', 403)
             parsed = urllib.parse.urlsplit(self.path)
             if parsed.scheme or parsed.netloc or not self.path.startswith('/'):
