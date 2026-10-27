@@ -315,8 +315,6 @@ def run(args):
     machine = hardware()
     model = model_check(args.model)
     profile = choose_profile(args.profile, machine['memory_bytes'], model['size'], args.context)
-    if args.mmproj and profile['name'] == 'compact32':
-        raise ValueError('compact32 版本只验收文本模式；图像配置请在更大内存机器使用 balanced')
     print(json.dumps({'hardware': machine, 'profile': profile, 'model': model['path']}, ensure_ascii=False, indent=2), flush=True)
     DATA.mkdir(exist_ok=True)
     with (DATA / 'run.lock').open('a') as mutex:
@@ -325,51 +323,17 @@ def run(args):
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(('127.0.0.1', args.port))
         binary, ui = setup(args)
-        cmd = command(binary, ui, model, profile, args)
-        write(DATA / 'last-run.json', {'command': cmd, 'profile': profile, 'model': model, 'hardware': machine})
-        proc = None
+        from lib.control import Supervisor, serve
+        manager = Supervisor(ROOT, DATA, binary, ui, model, profile, machine, args, command, clean_environment)
         previous = signal.getsignal(signal.SIGTERM)
         def interrupted(signum, frame):
             raise KeyboardInterrupt()
         signal.signal(signal.SIGTERM, interrupted)
         try:
-            with (DATA / 'server.log').open('w', buffering=1) as log:
-                proc = subprocess.Popen(cmd, env=clean_environment(), stdin=subprocess.DEVNULL,
-                                        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-                write(DATA / 'active.json', {'pid': proc.pid, 'port': args.port, 'binary': str(binary)})
-                for _ in range(180):
-                    if proc.poll() is not None:
-                        raise RuntimeError('模型加载失败，查看 .coder390/server.log')
-                    try:
-                        with CLIENT.open(f'http://127.0.0.1:{args.port}/health', timeout=1) as response:
-                            if json.load(response).get('status') == 'ok':
-                                owner = subprocess.run(['/usr/sbin/lsof', '-nP', '-a', '-p', str(proc.pid),
-                                                        f'-iTCP:{args.port}', '-sTCP:LISTEN'],
-                                                       capture_output=True, text=True)
-                                if owner.returncode == 0:
-                                    break
-                    except (OSError, ValueError):
-                        pass
-                    time.sleep(1)
-                else:
-                    raise RuntimeError('模型加载超时，查看 .coder390/server.log')
-                print(f'已启动：http://127.0.0.1:{args.port}/  （保留此终端，Ctrl+C关闭）', flush=True)
-                if not args.no_open:
-                    subprocess.run(['/usr/bin/open', f'http://127.0.0.1:{args.port}/'], check=False)
-                if proc.wait() != 0:
-                    raise RuntimeError('模型进程异常退出，查看 .coder390/server.log')
+            serve(manager, open_browser=not args.no_open)
         finally:
             signal.signal(signal.SIGTERM, previous)
-            if proc is not None and proc.poll() is None:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGTERM)
-                try:
-                    proc.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    with contextlib.suppress(ProcessLookupError):
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    proc.wait()
-            (DATA / 'active.json').unlink(missing_ok=True)
+            manager.close()
 
 
 def main():
@@ -386,7 +350,8 @@ def main():
             p.add_argument('--profile', choices=['auto', *PROFILES], default='auto')
             p.add_argument('--context', type=int)
             p.add_argument('--port', type=int, default=8793)
-            p.add_argument('--mmproj')
+            p.add_argument('--mmproj', help='本地匹配的视觉投影；未指定时自动检查模型同目录')
+            p.add_argument('--no-vision', action='store_true', help='本次启动先关闭看图，可在页面重新开启')
             p.add_argument('--no-open', action='store_true')
     doctor = commands.add_parser('doctor')
     doctor.add_argument('--model')
