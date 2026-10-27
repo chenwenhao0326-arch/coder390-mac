@@ -12,7 +12,8 @@ self.addEventListener('activate', event => event.waitUntil((async () => {
     if (url.origin === self.location.origin && url.searchParams.has('c390-managed') &&
         url.searchParams.get('c390-sw') !== C390_UI_VERSION) {
       url.searchParams.set('c390-sw', C390_UI_VERSION);
-      await client.navigate(url.href);
+      // Do not await navigation inside activate: navigation itself may wait for activation.
+      client.navigate(url.href).catch(() => {});
     }
   }
 })()));
