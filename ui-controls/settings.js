@@ -64,11 +64,20 @@
   restoreDraft();
 
   async function getState() {
-    const response = await fetch('/_coder390/status', { cache: 'no-store', credentials: 'same-origin' });
-    if (!response.ok) throw new Error(`读取设置失败（${response.status}）`);
-    state = await response.json();
-    paintStatus();
-    return state;
+    try {
+      const response = await fetch('/_coder390/status', { cache: 'no-store', credentials: 'same-origin' });
+      if (!response.ok) throw new Error(`读取设置失败（${response.status}）`);
+      state = await response.json();
+      paintStatus();
+      return state;
+    } catch (error) {
+      state = null;
+      $('dot').style.color = '#ff9c8a';
+      $('badge').textContent = '模型设置 · 服务未连接';
+      $('status').textContent = '管理服务未连接，请检查运行终端';
+      $('apply').disabled = true;
+      throw error;
+    }
   }
   function paintStatus() {
     const ready = state.phase === 'ready';
@@ -139,7 +148,7 @@
     finally {
       busy = false;
       for (const id of ['context', 'vision', 'projector']) $(id).disabled = false;
-      $('apply').disabled = false;
+      $('apply').disabled = !state || state.phase === 'loading' || state.phase === 'restarting';
     }
   });
   getState().catch(() => { $('badge').textContent = '模型设置 · 未连接'; });
