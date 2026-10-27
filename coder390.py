@@ -175,6 +175,8 @@ def engine_ready():
     if not receipt_path.exists():
         return None
     receipt = read(receipt_path)
+    if receipt.get('machine', {}).get('chip') != hardware()['chip']:
+        return None
     if receipt['inputs'] != package_fingerprint():
         return None
     binary = DATA / 'build/bin/llama-server'
@@ -197,6 +199,8 @@ def setup(args):
         if ready:
             print('优化引擎和聊天界面已就绪。', flush=True)
             return ready
+        if (DATA / 'engine.json').exists() and read(DATA / 'engine.json').get('machine', {}).get('chip') != machine['chip']:
+            raise RuntimeError('已有原生构建属于另一种芯片；请在新克隆目录编译，不要复制别人的 .coder390 缓存')
         for tool in ('clang', 'make', 'git'):
             r = subprocess.run(['/usr/bin/xcrun', '--find', tool], capture_output=True, text=True)
             if r.returncode:
@@ -337,7 +341,11 @@ def run(args):
                     try:
                         with CLIENT.open(f'http://127.0.0.1:{args.port}/health', timeout=1) as response:
                             if json.load(response).get('status') == 'ok':
-                                break
+                                owner = subprocess.run(['/usr/sbin/lsof', '-nP', '-a', '-p', str(proc.pid),
+                                                        f'-iTCP:{args.port}', '-sTCP:LISTEN'],
+                                                       capture_output=True, text=True)
+                                if owner.returncode == 0:
+                                    break
                     except (OSError, ValueError):
                         pass
                     time.sleep(1)
