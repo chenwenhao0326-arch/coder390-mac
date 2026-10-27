@@ -227,6 +227,7 @@ def setup(args):
             archives[key] = target
         source = DATA / 'source'
         source_receipt = DATA / 'source.json'
+        source_inputs = fingerprint({key: lock[key] for key in ('source', 'patches', 'patched_files')})
         if not source.exists():
             with tempfile.TemporaryDirectory(prefix='source-', dir=DATA) as tmp:
                 staging = Path(tmp) / 'tree'
@@ -241,8 +242,8 @@ def setup(args):
                     if digest(staging / name) != sha:
                         raise RuntimeError('补丁后的源码与已采用版本不符：' + name)
                 staging.rename(source)
-            write(source_receipt, {'inputs': inputs})
-        elif not source_receipt.exists() or read(source_receipt)['inputs'] != inputs:
+            write(source_receipt, {'inputs': source_inputs})
+        elif not source_receipt.exists() or read(source_receipt)['inputs'] != source_inputs:
             raise RuntimeError('已有源码缓存与发布版本不同；请在新克隆目录准备，旧文件保留')
         for name, sha in lock.get('patched_files', {}).items():
             if digest(source / name) != sha:
@@ -265,12 +266,7 @@ def setup(args):
             raise RuntimeError('聊天界面包必须包含一个 index.html')
         ui = indexes[0].parent
         configure = [str(cmake), '-S', str(source), '-B', str(DATA / 'build'), '-G', 'Unix Makefiles',
-                     '-DCMAKE_BUILD_TYPE=Release', '-DLLAMA_USE_SYSTEM_GGML=OFF', '-DBUILD_SHARED_LIBS=OFF',
-                     '-DGGML_BACKEND_DL=OFF', '-DGGML_METAL=ON', '-DGGML_METAL_EMBED_LIBRARY=ON',
-                     '-DGGML_NATIVE=ON', '-DLLAMA_BUILD_TESTS=OFF', '-DLLAMA_BUILD_TOOLS=ON',
-                     '-DLLAMA_BUILD_SERVER=ON', '-DLLAMA_BUILD_UI=OFF', '-DLLAMA_USE_PREBUILT_UI=OFF',
-                     '-DLLAMA_LLGUIDANCE=OFF', '-DFETCHCONTENT_FULLY_DISCONNECTED=ON',
-                     '-DLLAMA_BUILD_NUMBER=11669', '-DLLAMA_BUILD_COMMIT=620d2225c-c390']
+                     *lock['cmake_options']]
         build = [str(cmake), '--build', str(DATA / 'build'), '--target', 'llama-server', '-j', str(args.jobs)]
         print('在本机编译优化引擎，日志：' + str(DATA / 'build.log'), flush=True)
         with (DATA / 'build.log').open('w') as log:
@@ -280,6 +276,11 @@ def setup(args):
                 if r.returncode:
                     raise RuntimeError('编译失败；查看 .coder390/build.log，已有文件保留用于诊断')
         binary = DATA / 'build/bin/llama-server'
+        linked = subprocess.check_output(['/usr/bin/otool', '-L', str(binary)], text=True).splitlines()[1:]
+        non_system = [line.strip().split(' ', 1)[0] for line in linked
+                      if not line.strip().startswith(('/System/Library/', '/usr/lib/'))]
+        if non_system:
+            raise RuntimeError('构建意外依赖非系统动态库：' + ', '.join(non_system))
         help_text = subprocess.check_output([str(binary), '--help'], env=clean_environment(), text=True, stderr=subprocess.STDOUT)
         if '--spec-draft-vocab' not in help_text:
             raise RuntimeError('编译结果缺少草稿词表优化')
