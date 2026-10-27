@@ -1,0 +1,278 @@
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -895,7 +895,9 @@
+     if (pipeline.cnt) {
+         const int n = pipeline.c4 ? ggml_nelements(op)/4 : ggml_nelements(op);
+ 
+-        ggml_metal_encoder_dispatch_threadgroups(enc, n, 1, 1, 1, 1, 1);
++        const int nth = MIN(256, n);
++
++        ggml_metal_encoder_dispatch_threadgroups(enc, (n + nth - 1)/nth, 1, 1, nth, 1, 1);
+     } else {
+         const int nth_max = MIN(256, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+         const int nth = MIN(args.ne00, nth_max);
+@@ -948,7 +950,9 @@
+ 
+     const int64_t nrows = ggml_nrows(op->src[0]);
+ 
+-    const int32_t nth = std::max(1, std::min(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline), ne00/2));
++    // split each row over several threadgroups: with a single row (decode) one threadgroup would run on one GPU core
++    const int32_t nth = std::max(1, std::min(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline), std::min(256, ne0)));
++    const int32_t nk  = (ne0 + nth - 1)/nth;
+ 
+     ggml_metal_encoder_set_pipeline(enc, pipeline);
+     ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+@@ -960,7 +964,7 @@
+     }
+     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         3);
+ 
+-    ggml_metal_encoder_dispatch_threadgroups(enc, nrows, 1, 1, nth, 1, 1);
++    ggml_metal_encoder_dispatch_threadgroups(enc, nk, nrows, 1, nth, 1, 1);
+ 
+     return 1;
+ }
+@@ -4236,7 +4240,9 @@
+     ggml_metal_encoder_set_buffer  (enc, bid_dst,  3);
+ 
+     if (pipeline.cnt) {
+-        ggml_metal_encoder_dispatch_threadgroups(enc, args.ne0, ggml_nrows(op), 1, 1, 1, 1);
++        const int nth = MIN(256, args.ne0);
++
++        ggml_metal_encoder_dispatch_threadgroups(enc, (args.ne0 + nth - 1)/nth, ggml_nrows(op), 1, nth, 1, 1);
+     } else {
+         const int nth_max = MIN(256, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+ 
+--- a/ggml/src/ggml-metal/kernels/unary.metal
++++ b/ggml/src/ggml-metal/kernels/unary.metal
+@@ -20,7 +20,7 @@
+     int i0;
+ 
+     if (FC_CNT) {
+-        i0 = tgpig.x;
++        i0 = tgpig.x*ntg.x + tpitg.x;
+ 
+         src0_ptr = (device const T0 *) (src0);
+         dst_ptr  = (device       T  *) (dst);
+@@ -41,6 +41,10 @@
+ 
+         if (!FC_CNT) {
+             if (i0 >= args.ne0) {
++                return;
++            }
++        } else {
++            if (i0 >= args.ne00*args.ne01*args.ne02*args.ne03) {
+                 return;
+             }
+         }
+@@ -209,14 +213,15 @@
+         device const char * src0,
+         device const char * src1,
+         device       char * dst,
+-        uint tgpig[[threadgroup_position_in_grid]],
+-        uint tpitg[[thread_position_in_threadgroup]],
+-        uint   ntg[[threads_per_threadgroup]]) {
+-    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig*args.nb01) + args.i00;
+-    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig*args.nb11) + args.i10;
+-    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig*args.nb1);
+-
+-    for (int i0 = tpitg; i0 < args.ne0; i0 += ntg) {
++        uint2 tgpig[[threadgroup_position_in_grid]],
++        uint2 tpitg[[thread_position_in_threadgroup]],
++        uint2   ntg[[threads_per_threadgroup]],
++        uint2  ntgs[[threadgroups_per_grid]]) {
++    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig.y*args.nb01) + args.i00;
++    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig.y*args.nb11) + args.i10;
++    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig.y*args.nb1);
++
++    for (int i0 = tgpig.x*ntg.x + tpitg.x; i0 < args.ne0; i0 += ntg.x*ntgs.x) {
+         const float x0 = src0_row[i0];
+         const float x1 = src1_row[i0];
+ 
+@@ -235,14 +240,15 @@
+         device const char * src0,
+         device const char * src1,
+         device       char * dst,
+-        uint tgpig[[threadgroup_position_in_grid]],
+-        uint tpitg[[thread_position_in_threadgroup]],
+-        uint   ntg[[threads_per_threadgroup]]) {
+-    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig*args.nb01) + args.i00;
+-    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig*args.nb11) + args.i10;
+-    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig*args.nb1);
+-
+-    for (int i0 = tpitg; i0 < args.ne0; i0 += ntg) {
++        uint2 tgpig[[threadgroup_position_in_grid]],
++        uint2 tpitg[[thread_position_in_threadgroup]],
++        uint2   ntg[[threads_per_threadgroup]],
++        uint2  ntgs[[threadgroups_per_grid]]) {
++    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig.y*args.nb01) + args.i00;
++    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig.y*args.nb11) + args.i10;
++    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig.y*args.nb1);
++
++    for (int i0 = tgpig.x*ntg.x + tpitg.x; i0 < args.ne0; i0 += ntg.x*ntgs.x) {
+         const float x0 = src0_row[i0];
+         const float x1 = src1_row[i0];
+ 
+@@ -263,14 +269,15 @@
+         device const char * src0,
+         device const char * src1,
+         device       char * dst,
+-        uint tgpig[[threadgroup_position_in_grid]],
+-        uint tpitg[[thread_position_in_threadgroup]],
+-        uint   ntg[[threads_per_threadgroup]]) {
+-    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig*args.nb01) + args.i00;
+-    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig*args.nb11) + args.i10;
+-    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig*args.nb1);
+-
+-    for (int i0 = tpitg; i0 < args.ne0; i0 += ntg) {
++        uint2 tgpig[[threadgroup_position_in_grid]],
++        uint2 tpitg[[thread_position_in_threadgroup]],
++        uint2   ntg[[threads_per_threadgroup]],
++        uint2  ntgs[[threadgroups_per_grid]]) {
++    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig.y*args.nb01) + args.i00;
++    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig.y*args.nb11) + args.i10;
++    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig.y*args.nb1);
++
++    for (int i0 = tgpig.x*ntg.x + tpitg.x; i0 < args.ne0; i0 += ntg.x*ntgs.x) {
+         const float x0 = src0_row[i0];
+         const float x1 = src1_row[i0];
+ 
+@@ -291,14 +298,15 @@
+         device const char * src0,
+         device const char * src1,
+         device       char * dst,
+-        uint tgpig[[threadgroup_position_in_grid]],
+-        uint tpitg[[thread_position_in_threadgroup]],
+-        uint   ntg[[threads_per_threadgroup]]) {
+-    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig*args.nb01) + args.i00;
+-    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig*args.nb11) + args.i10;
+-    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig*args.nb1);
+-
+-    for (int i0 = tpitg; i0 < args.ne0; i0 += ntg) {
++        uint2 tgpig[[threadgroup_position_in_grid]],
++        uint2 tpitg[[thread_position_in_threadgroup]],
++        uint2   ntg[[threads_per_threadgroup]],
++        uint2  ntgs[[threadgroups_per_grid]]) {
++    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig.y*args.nb01) + args.i00;
++    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig.y*args.nb11) + args.i10;
++    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig.y*args.nb1);
++
++    for (int i0 = tgpig.x*ntg.x + tpitg.x; i0 < args.ne0; i0 += ntg.x*ntgs.x) {
+         float x0 = src0_row[i0];
+         float x1 = src1_row[i0];
+ 
+@@ -323,14 +331,15 @@
+         device const char * src0,
+         device const char * src1,
+         device       char * dst,
+-        uint tgpig[[threadgroup_position_in_grid]],
+-        uint tpitg[[thread_position_in_threadgroup]],
+-        uint   ntg[[threads_per_threadgroup]]) {
+-    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig*args.nb01) + args.i00;
+-    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig*args.nb11) + args.i10;
+-    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig*args.nb1);
+-
+-    for (int i0 = tpitg; i0 < args.ne0; i0 += ntg) {
++        uint2 tgpig[[threadgroup_position_in_grid]],
++        uint2 tpitg[[thread_position_in_threadgroup]],
++        uint2   ntg[[threads_per_threadgroup]],
++        uint2  ntgs[[threadgroups_per_grid]]) {
++    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig.y*args.nb01) + args.i00;
++    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig.y*args.nb11) + args.i10;
++    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig.y*args.nb1);
++
++    for (int i0 = tgpig.x*ntg.x + tpitg.x; i0 < args.ne0; i0 += ntg.x*ntgs.x) {
+         const float gate = min((float) src0_row[i0], args.limit);
+         const float up = clamp((float) src1_row[i0], -args.limit, args.limit);
+ 
+@@ -349,14 +358,15 @@
+         device const char * src0,
+         device const char * src1,
+         device       char * dst,
+-        uint tgpig[[threadgroup_position_in_grid]],
+-        uint tpitg[[thread_position_in_threadgroup]],
+-        uint   ntg[[threads_per_threadgroup]]) {
+-    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig*args.nb01) + args.i00;
+-    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig*args.nb11) + args.i10;
+-    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig*args.nb1);
+-
+-    for (int i0 = tpitg; i0 < args.ne0; i0 += ntg) {
++        uint2 tgpig[[threadgroup_position_in_grid]],
++        uint2 tpitg[[thread_position_in_threadgroup]],
++        uint2   ntg[[threads_per_threadgroup]],
++        uint2  ntgs[[threadgroups_per_grid]]) {
++    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig.y*args.nb01) + args.i00;
++    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig.y*args.nb11) + args.i10;
++    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig.y*args.nb1);
++
++    for (int i0 = tgpig.x*ntg.x + tpitg.x; i0 < args.ne0; i0 += ntg.x*ntgs.x) {
+         const float x0 = src0_row[i0];
+         const float x1 = src1_row[i0];
+ 
+@@ -377,14 +387,15 @@
+         device const char * src0,
+         device const char * src1,
+         device       char * dst,
+-        uint tgpig[[threadgroup_position_in_grid]],
+-        uint tpitg[[thread_position_in_threadgroup]],
+-        uint   ntg[[threads_per_threadgroup]]) {
+-    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig*args.nb01) + args.i00;
+-    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig*args.nb11) + args.i10;
+-    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig*args.nb1);
+-
+-    for (int i0 = tpitg; i0 < args.ne0; i0 += ntg) {
++        uint2 tgpig[[threadgroup_position_in_grid]],
++        uint2 tpitg[[thread_position_in_threadgroup]],
++        uint2   ntg[[threads_per_threadgroup]],
++        uint2  ntgs[[threadgroups_per_grid]]) {
++    device const T * src0_row = (device const T *) ((device const char *) src0 + tgpig.y*args.nb01) + args.i00;
++    device const T * src1_row = (device const T *) ((device const char *) src1 + tgpig.y*args.nb11) + args.i10;
++    device       T * dst_row  = (device       T *) ((device       char *) dst  + tgpig.y*args.nb1);
++
++    for (int i0 = tgpig.x*ntg.x + tpitg.x; i0 < args.ne0; i0 += ntg.x*ntgs.x) {
+         const float x0 = src0_row[i0];
+         const float x1 = src1_row[i0];
+ 
+--- a/ggml/src/ggml-metal/kernels/binbcast.metal
++++ b/ggml/src/ggml-metal/kernels/binbcast.metal
+@@ -22,8 +22,13 @@
+ 
+     if (FC_RB) {
+         // row broadcast
+-        const uint i0 = tgpig.y*args.ne00 + tgpig.x;
+-        const uint i1 = FC_CB ? tgpig.x%args.ne10 : tgpig.x;
++        const uint i = tgpig.x*ntg.x + tpitg.x;
++        if (i >= (uint) args.ne0) {
++            return;
++        }
++
++        const uint i0 = tgpig.y*args.ne00 + i;
++        const uint i1 = FC_CB ? i%args.ne10 : i;
+ 
+         device const T0 * src0_row = (device const T0 *) (src0);
+         device       T  * dst_row  = (device       T  *) (dst);
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -9740,6 +9740,23 @@
+     test_cases.emplace_back(new test_dsv4_hc_post(2560, 21, true, true));
+     test_cases.emplace_back(new test_dsv4_hc_post(31, 17, false, true));
+ 
++    // Metal launch tails and multi-threadgroup GLU rows, including the dense 27B FFN width.
++    for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
++        for (int64_t width : {257, 17408}) {
++            for (int64_t rows : {1, 5}) {
++                test_cases.emplace_back(new test_glu(GGML_GLU_OP_SWIGLU, type, {2*width, rows, 1, 1}, 0, false));
++                test_cases.emplace_back(new test_glu_split(GGML_GLU_OP_SWIGLU, type, {width, rows, 1, 1}, 0));
++            }
++        }
++        for (ggml_unary_op op : {GGML_UNARY_OP_SILU, GGML_UNARY_OP_SIGMOID, GGML_UNARY_OP_SOFTPLUS}) {
++            test_cases.emplace_back(new test_unary(op, type, {257, 3, 1, 1}));
++            test_cases.emplace_back(new test_unary(op, type, {1028, 3, 1, 1}));
++        }
++        for (auto op : {ggml_add, ggml_sub, ggml_mul, ggml_div}) {
++            test_cases.emplace_back(new test_bin_bcast(op, type, {257, 1, 1, 1}, {1, 5, 1, 1}));
++        }
++    }
++
+     // glu ops
+     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_BF16}) {
+         for (int v : {0, 1}) {

@@ -1,0 +1,334 @@
+diff --git a/src/llama-cparams.h b/src/llama-cparams.h
+--- a/src/llama-cparams.h
++++ b/src/llama-cparams.h
+@@ -54,6 +54,7 @@
+     bool kv_unified;
+     bool pipeline_parallel;
+     bool training;           // set by llama_opt_init()
++    bool draft_compact_topk = false;
+ 
+     size_t moe_cache_size;
+ 
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -18,6 +18,7 @@
+ #include <cinttypes>
+ #include <cmath>
+ #include <cstring>
++#include <cstdlib>
+ #include <limits>
+ #include <stdexcept>
+ #include <string>
+@@ -208,6 +209,8 @@
+     cparams.offload_kqv             = params.offload_kqv;
+     cparams.no_perf                 = params.no_perf;
+     cparams.warmup                  = false;
++    const char * compact_topk = std::getenv("LLAMA_DRAFT_COMPACT_TOPK");
++    cparams.draft_compact_topk = compact_topk != nullptr && std::strcmp(compact_topk, "1") == 0;
+ 
+     // +1: id n_layer() taps the output of the last layer ("input" of the head)
+     cparams.embeddings_layer_inp.resize(hparams.n_layer() + 1, false);
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -967,6 +967,10 @@
+     ggml_tensor * t_inp_tokens  = nullptr;
+     ggml_tensor * t_inp_embd    = nullptr; // [n_embd_inp, n_tokens]
+     ggml_tensor * t_logits      = nullptr;
++    ggml_tensor * t_logits_compact = nullptr;
++    ggml_tensor * t_logits_mapped  = nullptr;
++    ggml_tensor * t_logits_ids     = nullptr;
++    bool compact_topk_reported = false;
+     ggml_tensor * t_embd        = nullptr;
+     ggml_tensor * t_embd_pooled = nullptr;
+     ggml_tensor * t_h_nextn     = nullptr; // [n_embd, n_outputs] hidden state before final output norm
+@@ -1445,6 +1449,7 @@
+     //
+ 
+     void build_logits() const;
++    bool use_compact_draft_topk() const;
+ 
+     //
+     // sampling (backend sampling)
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -18,6 +18,7 @@
+ #include "llama-memory-recurrent.h"
+ 
+ #include <cassert>
++#include <cinttypes>
+ #include <cmath>
+ #include <cstring>
+ #include <numeric>
+@@ -1380,6 +1381,9 @@
+     t_inp_tokens  = nullptr;
+     t_inp_embd    = nullptr;
+     t_logits      = nullptr;
++    t_logits_compact = nullptr;
++    t_logits_mapped  = nullptr;
++    t_logits_ids     = nullptr;
+     t_embd        = nullptr;
+     t_embd_pooled = nullptr;
+     t_h_nextn     = nullptr;
+@@ -1650,8 +1654,14 @@
+         const int64_t n_outputs = res->ne[1];
+ 
+         ggml_tensor * logits = ggml_fill(ctx0, ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, n_vocab, n_outputs), -INFINITY);
++        ggml_set_name(logits, "draft_full_fill");
+         logits = ggml_set_rows(ctx0, logits, ggml_reshape_3d(ctx0, res, 1, n_ids, n_outputs), ggml_reshape_3d(ctx0, vsub->ids, n_ids, 1, 1));
+-        return ggml_reshape_2d(ctx0, logits, n_vocab, n_outputs);
++        ggml_set_name(logits, "draft_full_scatter");
++        ggml_tensor * mapped = ggml_reshape_2d(ctx0, logits, n_vocab, n_outputs);
++        this->res->t_logits_compact = res;
++        this->res->t_logits_mapped  = mapped;
++        this->res->t_logits_ids     = vsub->ids;
++        return mapped;
+     }
+ 
+     for (const auto & lora : *loras) {
+@@ -4094,6 +4104,21 @@
+     ggml_build_forward_expand(gf, cur);
+ }
+ 
++bool llm_graph_context::use_compact_draft_topk() const {
++    if (!cparams.draft_compact_topk || !vsub || !res->t_logits_compact ||
++        res->t_logits != res->t_logits_mapped || ubatch.n_tokens != 1 || n_outputs != 1 ||
++        ubatch.n_seq_id[0] != 1 || !ubatch.output[0] || samplers.size() != 1 ||
++        cparams.n_outputs_max_per_seq != 1) {
++        return false;
++    }
++    const auto it = samplers.find(ubatch.seq_id[0][0]);
++    if (it == samplers.end() || std::strcmp(llama_sampler_name(it->second), "chain") != 0 ||
++        llama_sampler_chain_n(it->second) != 1) {
++        return false;
++    }
++    return std::strcmp(llama_sampler_name(llama_sampler_chain_get(it->second, 0)), "+top-k") == 0;
++}
++
+ void llm_graph_context::build_logits() const {
+     // a pooled embeddings context outputs one vector per sequence, so its graph skips the LM head
+     if (cparams.embeddings && pooling_type != LLAMA_POOLING_TYPE_NONE) {
+@@ -4102,7 +4127,16 @@
+ 
+     // the models declare t_logits without expanding it, so the LM head is computed only when it is expanded here
+     if (res->t_logits != nullptr) {
+-        ggml_build_forward_expand(gf, res->t_logits);
++        if (use_compact_draft_topk()) {
++            // Keep the fallback topology, but do not mark its fill/scatter for computation.
++            ggml_build_forward_order(gf, res->t_logits);
++            if (!res->compact_topk_reported) {
++                LLAMA_LOG_WARN("compact_topk: selecting from %" PRId64 " draft ids before mapping to the full vocabulary\n", res->t_logits_ids->ne[0]);
++                res->compact_topk_reported = true;
++            }
++        } else {
++            ggml_build_forward_expand(gf, res->t_logits);
++        }
+     }
+ }
+ 
+@@ -4134,7 +4168,8 @@
+     GGML_ASSERT(res->t_logits != nullptr && "missing t_logits tensor");
+ 
+     // the padding row gives the chains without a row of the ubatch a valid input, even with no output at all
+-    ggml_tensor * logits_t = ggml_pad(ctx0, res->t_logits, 0, 1, 0, 0);
++    const bool compact = use_compact_draft_topk();
++    ggml_tensor * logits_t = ggml_pad(ctx0, compact ? res->t_logits_compact : res->t_logits, 0, 1, 0, 0);
+ 
+     for (const auto & entry : samplers) {
+         if (entry.second->iface->backend_reset) {
+@@ -4162,7 +4197,7 @@
+                 /*.logits       =*/ logits_seq,
+                 /*.probs        =*/ nullptr,
+                 /*.sampled      =*/ nullptr,
+-                /*.candidates   =*/ nullptr,
++                /*.candidates   =*/ compact ? res->t_logits_ids : nullptr,
+             };
+ 
+             assert(sampler->iface->backend_apply);
+diff --git a/tests/test-draft-vocab.cpp b/tests/test-draft-vocab.cpp
+--- a/tests/test-draft-vocab.cpp
++++ b/tests/test-draft-vocab.cpp
+@@ -5,8 +5,10 @@
+ #include "llama.h"
+ 
+ #include <cmath>
++#include <cinttypes>
+ #include <cstdio>
+ #include <cstring>
++#include <cstdlib>
+ #include <functional>
+ #include <random>
+ #include <set>
+@@ -155,7 +157,131 @@
+     return n_fail;
+ }
+ 
+-static int run_type(ggml_type head_type, bool metal_mapped) {
++struct sampling_trace {
++    int full_fill = 0;
++    int full_scatter = 0;
++    int64_t topk_width = 0;
++};
++
++static bool trace_sampling(ggml_tensor * tensor, bool ask, void * userdata) {
++    if (!ask) {
++        return true;
++    }
++    auto & trace = *static_cast<sampling_trace *>(userdata);
++    if (tensor->flags & GGML_TENSOR_FLAG_COMPUTE) {
++        trace.full_fill += std::strcmp(tensor->name, "draft_full_fill") == 0;
++        trace.full_scatter += std::strcmp(tensor->name, "draft_full_scatter") == 0;
++        if (tensor->op == GGML_OP_TOP_K) {
++            trace.topk_width = tensor->src[0]->ne[0];
++        }
++    }
++    return false;
++}
++
++static int run_compact_sampling(llama_model * model, const std::vector<llama_token> & list, bool ties) {
++    llama_context * contexts[2] = { nullptr, nullptr };
++    llama_sampler * chains[2] = { nullptr, nullptr };
++    sampling_trace traces[2];
++    const char * saved = std::getenv("LLAMA_DRAFT_COMPACT_TOPK");
++    const std::string original_env = saved ? saved : "";
++    const bool had_env = saved != nullptr;
++    int n_fail = 0;
++    std::set<llama_token> valid(list.begin(), list.end());
++    valid.insert(eos);
++    for (int side = 0; side < 2; ++side) {
++        setenv("LLAMA_DRAFT_COMPACT_TOPK", side ? "1" : "0", 1);
++        auto cp = llama_context_default_params();
++        cp.n_ctx = 64;
++        cp.n_batch = cp.n_ubatch = 8;
++        cp.n_outputs_max_per_seq = 1;
++        cp.vocab_subset = list.data();
++        cp.n_vocab_subset = list.size();
++        cp.cb_eval = trace_sampling;
++        cp.cb_eval_user_data = &traces[side];
++        contexts[side] = llama_init_from_model(model, cp);
++        if (!contexts[side]) {
++            ++n_fail;
++            break;
++        }
++        chains[side] = llama_sampler_chain_init(llama_sampler_chain_default_params());
++        llama_sampler_chain_add(chains[side], llama_sampler_init_top_k(10));
++        if (!llama_set_sampler(contexts[side], 0, chains[side])) {
++            ++n_fail;
++            break;
++        }
++    }
++    if (had_env) {
++        setenv("LLAMA_DRAFT_COMPACT_TOPK", original_env.c_str(), 1);
++    } else {
++        unsetenv("LLAMA_DRAFT_COMPACT_TOPK");
++    }
++    llama_pos pos = 0;
++    // A two-token input with one output takes the compatibility path.
++    for (int step = 0; step < 3 && n_fail == 0; ++step) {
++        const int n_tokens = step == 2 ? 2 : 1;
++        llama_batch batch = llama_batch_init(n_tokens, 0, 1);
++        batch.n_tokens = n_tokens;
++        for (int i = 0; i < n_tokens; ++i) {
++            batch.token[i] = (7919*(pos + i) + 13) % n_vocab;
++            batch.pos[i] = pos + i;
++            batch.n_seq_id[i] = 1;
++            batch.seq_id[i][0] = 0;
++            batch.logits[i] = i == n_tokens - 1;
++        }
++        std::vector<llama_token> ids[2];
++        std::vector<float> values[2];
++        for (int side = 0; side < 2; ++side) {
++            traces[side] = {};
++            if (llama_decode(contexts[side], batch) != 0) {
++                ++n_fail;
++                break;
++            }
++            const auto n = llama_get_sampled_logits_count_ith(contexts[side], n_tokens - 1);
++            const auto * logits = llama_get_sampled_logits_ith(contexts[side], n_tokens - 1);
++            const auto * tokens = llama_get_sampled_candidates_ith(contexts[side], n_tokens - 1);
++            if (n != 10 || !logits || !tokens) {
++                ++n_fail;
++                break;
++            }
++            ids[side].assign(tokens, tokens + n);
++            values[side].assign(logits, logits + n);
++            const bool fast = side == 1 && n_tokens == 1;
++            if (traces[side].topk_width != (fast ? (int64_t) valid.size() : n_vocab) ||
++                (fast && (traces[side].full_fill || traces[side].full_scatter)) ||
++                (!fast && (!traces[side].full_fill || !traces[side].full_scatter))) {
++                fprintf(stderr, "compact graph mismatch: side=%d step=%d width=%" PRId64 " fill=%d scatter=%d\n",
++                        side, step, traces[side].topk_width, traces[side].full_fill, traces[side].full_scatter);
++                ++n_fail;
++            }
++            std::set<llama_token> unique(ids[side].begin(), ids[side].end());
++            if (unique.size() != 10) {
++                ++n_fail;
++            }
++            for (size_t i = 0; i < n; ++i) {
++                if (!valid.count(ids[side][i]) || !std::isfinite(values[side][i]) || (ties && values[side][i] != 0.0f)) {
++                    ++n_fail;
++                }
++            }
++        }
++        if (!ties && n_fail == 0 && (ids[0] != ids[1] || values[0] != values[1])) {
++            fprintf(stderr, "compact candidate IDs or logits differ for non-tied scores\n");
++            ++n_fail;
++        }
++        llama_batch_free(batch);
++        pos += n_tokens;
++    }
++    for (int side = 0; side < 2; ++side) {
++        if (contexts[side]) {
++            llama_set_sampler(contexts[side], 0, nullptr);
++        }
++        llama_sampler_free(chains[side]);
++        llama_free(contexts[side]);
++    }
++    fprintf(stderr, "compact sampling: ties=%d failures=%d\n", ties, n_fail);
++    return n_fail;
++}
++
++static int run_type(ggml_type head_type, bool metal_mapped, bool compact_sampling) {
+     fixture_data fixture;
+     gguf_context * meta = make_metadata(head_type);
+     llama_model_params params = llama_model_default_params();
+@@ -212,8 +338,17 @@
+     }
+ 
+     int n_fail = 0;
+-    n_fail += run(model, "list",                list, computed);
+-    if (!metal_mapped) {
++    if (compact_sampling) {
++        n_fail += run_compact_sampling(model, list, false);
++        std::vector<uint8_t> zeros(fixture.head_bytes.size(), 0);
++        ggml_backend_tensor_set(fixture.head, zeros.data(), 0, zeros.size());
++        // Equal-score Top-K can choose different valid IDs; no precision tolerance is relaxed.
++        n_fail += run_compact_sampling(model, list, true);
++        ggml_backend_tensor_set(fixture.head, fixture.head_bytes.data(), 0, fixture.head_bytes.size());
++    } else {
++        n_fail += run(model, "list", list, computed);
++    }
++    if (!metal_mapped && !compact_sampling) {
+         n_fail += run(model, "id outside the vocab", bad,  {}); // falls back to the full head
+         n_fail += run(model, "every id",            all,  {}); // falls back to the full head
+     }
+@@ -239,13 +374,14 @@
+ }
+ 
+ int main(int argc, char ** argv) {
+-    const bool metal_mapped = argc == 2 && std::strcmp(argv[1], "--metal-mapped") == 0;
++    const bool compact_sampling = argc == 2 && std::strcmp(argv[1], "--compact-sampling") == 0;
++    const bool metal_mapped = compact_sampling || (argc == 2 && std::strcmp(argv[1], "--metal-mapped") == 0);
+     if (argc != 1 && !metal_mapped) {
+-        fprintf(stderr, "usage: %s [--metal-mapped]\n", argv[0]);
++        fprintf(stderr, "usage: %s [--metal-mapped|--compact-sampling]\n", argv[0]);
+         return 2;
+     }
+     llama_backend_init();
+-    const int n_fail = run_type(GGML_TYPE_F32, metal_mapped) + run_type(GGML_TYPE_Q8_0, metal_mapped);
++    const int n_fail = run_type(GGML_TYPE_F32, metal_mapped, compact_sampling) + run_type(GGML_TYPE_Q8_0, metal_mapped, compact_sampling);
+     llama_backend_free();
+ 
+     printf("%s: %s\n", __func__, n_fail == 0 ? "OK" : "FAILED");

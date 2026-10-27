@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "upstream_commit": "620d2225cc436ab0b001e3200e590e3b286ef9ab",
+  "upstream_tag": "v0.7.0",
+  "upstream_release": "coder390-metal-threadgroups-v1-20261026",
+  "source": {
+    "url": "https://api.github.com/repos/ggml-org/llama.cpp/tarball/620d2225cc436ab0b001e3200e590e3b286ef9ab",
+    "filename": "llama-source-620d2225cc43.tar.gz",
+    "sha256": "da36b3375b80d9d237e3787ff04fa72887bce2c8eefb717023205e4e6bbdeaad",
+    "size": 38192573
+  },
+  "cmake": {
+    "url": "https://files.pythonhosted.org/packages/7f/09/516b0d709672bc430eb13278f0316acd34869269447744f5d136daeef689/cmake-3.31.6-py3-none-macosx_10_10_universal2.whl",
+    "filename": "cmake-3.31.6-py3-none-macosx_10_10_universal2.whl",
+    "sha256": "da9d4fd9abd571fd016ddb27da0428b10277010b23bb21e3678f8b9e96e1686e",
+    "size": 47224338
+  },
+  "ui": {
+    "url": "https://api.github.com/repos/ggml-org/llama.cpp/releases/assets/462342681",
+    "filename": "llama-b9850-ui.tar.gz",
+    "size": 2731350,
+    "sha256": "84613cce41f0cbfb0fde08a5eb33aac4584f2cd0d3dabdcd65bf987e92cce578",
+    "public_url": "https://github.com/ggml-org/llama.cpp/releases/download/b9850/llama-b9850-ui.tar.gz"
+  },
+  "patches": [
+    {
+      "path": "patches/01-draft-vocab.patch",
+      "sha256": "2cc47f4e3c6576bae05af100180d6cade1711c6c6cb2eb1fc7d73caee70016f8"
+    },
+    {
+      "path": "patches/02-compact-topk.patch",
+      "sha256": "5207e5ec9243f024d9a151eef1a45a3de30b8a20d8c7c4963be8b15d1f8ca825"
+    },
+    {
+      "path": "patches/03-metal-threadgroups.patch",
+      "sha256": "05a3888c3b6b902c6435c47942f9ebf6e213d9d6cf6bc08b47019e0a30e05bfc"
+    }
+  ],
+  "vocab": {
+    "path": "vocab/zh-code-131072.json",
+    "sha256": "8f93f69aa4f5d661eea44eb24ebe3b2093cf14d19b0ed354c16fe6bc07afc5f3"
+  },
+  "patched_files": {
+    "common/arg.cpp": "72c237092edefb48de3050a2ba6b937a4637f653a4036e88333ddbb7abdce5a1",
+    "common/common.h": "71c7ff254c8150f14f0a0a1058a5eb0c61ea60f186654fa83567a4633ab8a7c4",
+    "common/speculative.cpp": "b2a4dc2d4ca0af3bf501dd4957f6e71cd2bf612e3878f812bc52074e881cb0e6",
+    "docs/speculative.md": "3c3906484413b831fefef07e8f0981b84bf594ae18a4ca14cb6e7cc38e5d0f6a",
+    "ggml/src/ggml-metal/ggml-metal-ops.cpp": "84fefe5268bee446fcbceb55865ab01a276dbde0e4d31968e180a0e1d5259de5",
+    "ggml/src/ggml-metal/kernels/binbcast.metal": "7e62900d42441d0aa6309efa0ef94aa0f72843fa127152d1876df09560648713",
+    "ggml/src/ggml-metal/kernels/unary.metal": "7661e8b52c9f8821157aa012fce3b20fff5341f50a773fae0e914232bda487ca",
+    "include/llama.h": "e1ad44423ce6de90af89cb13c5f7aacd090407868f16cab0286292b4ba1305c7",
+    "scripts/build-draft-vocab.py": "60f3b1c36095acdb527d31798846b051c4a2551cdbc7c3706ae492bb3ac57be7",
+    "src/llama-context.cpp": "18d69b9a9f70fa3f2cd8c2e4fd28e6f4ceb241f6d3124c71dccbe2e64afb86a7",
+    "src/llama-context.h": "e9e55f438b3f9358dbea64666ab8dae2bd551374018ad30771d41f1d6b3be430",
+    "src/llama-cparams.h": "4337aae077698fd5580df24724e1b70f700bed99c1f9db6be22db925f782fd64",
+    "src/llama-graph.cpp": "cdd010cd31b664f4f88d1a03eb70acb6365414ae065a17008ce9032fabb533bd",
+    "src/llama-graph.h": "a81649086d69cb5f5705ceff6a43ebd4aa96d42d1118bf80fc0dece7e0f98313",
+    "tests/CMakeLists.txt": "6d32d38b297a44822bc5a1e667aa1afb6533eeaffde16fa15942156649a55372",
+    "tests/test-backend-ops.cpp": "7b40fe2a4eb769b62ee23e154d06420974ac2f0951b968282b713d35dfb5ab03",
+    "tests/test-draft-vocab.cpp": "1bdb067b977b7a49f902ed6fee91bfc8683f56d41114cab0e2cf6795da3104e5",
+    "tools/cli/README.md": "590afe27c8cf126d0900e9dede3281381fb286544c59abd4908c36b5c4170464",
+    "tools/server/README.md": "0406af366ee2a9b52b1ac35f48373a9677dfaf57e21ff43c9596fa2e5d19d077",
+    "tools/server/tests/unit/test_speculative.py": "8d698df6464d09cb1a146156a17af6fd3b67f8406c8f700e1d9b4cac9fd7bc79",
+    "tools/server/tests/utils.py": "4e19ffb3bf791b2c1b9978a07bb603f42635ed0d49cc5724baff5d11d2d6c090"
+  }
+}

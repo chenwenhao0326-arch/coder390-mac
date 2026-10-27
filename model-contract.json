@@ -1,0 +1,6 @@
+{
+  "vocab_size": 248320,
+  "tokenizer_sha256": "807b7e1b1672972c7acf6c9d4368a5d9fbdd7e81f600e86cf042794ff4cf4851",
+  "architecture_sha256": "23d6179df2893e4949d7b2bd13521c0db601f8ced8f0c7767e923f6a1b10a9bd",
+  "tensor_shapes_sha256": "7b3dc686885348211040034c27667090be00e747e3edffbaf3317ea6a6c074df"
+}

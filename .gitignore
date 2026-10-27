@@ -1,0 +1,8 @@
+.coder390/
+__pycache__/
+*.pyc
+.DS_Store
+*.gguf
+*.safetensors
+*.ninfer
+.env*
