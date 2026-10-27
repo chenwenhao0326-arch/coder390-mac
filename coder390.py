@@ -301,7 +301,8 @@ def command(binary, ui, model, profile, args):
            '--spec-draft-p-min', '0.2', '--spec-draft-vocab', str(ROOT / 'vocab/zh-code-131072.json'),
            '--threads', '8', '--threads-batch', '8', '--batch-size', str(profile['batch']),
            '--ubatch-size', str(profile['ubatch']), '--path', str(ui), '--metrics',
-           '--ui-config', '{"showMessageStats":true,"keepStatsVisible":true}',
+           '--ui-config', json.dumps({'showMessageStats': True, 'keepStatsVisible': True,
+                                      'max_tokens': profile['output']}),
            '--jinja', '--reasoning-format', 'deepseek', '--offline', '--temp', '1.0',
            '--top-p', '0.95', '--top-k', '20', '--min-p', '0.0', '--repeat-penalty', '1.0',
            '--n-predict', str(profile['output'])]

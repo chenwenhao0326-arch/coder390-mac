@@ -8,7 +8,7 @@
 
 ## 开始使用
 
-需要原生 Apple Silicon macOS、至少 32GB 统一内存、Apple Command Line Tools，以及约 4GiB 的构建空间（不含已有模型）。若尚未安装开发工具，先运行并完成系统安装窗口：
+需要原生 Apple Silicon macOS、Python 3.9 或更新版本、至少 32GB 统一内存、Apple Command Line Tools，以及约 4GiB 的构建空间（不含已有模型）。Apple 开发工具提供可用的 Python；若尚未安装，先运行并完成系统安装窗口：
 
 ```sh
 xcode-select --install
@@ -55,7 +55,7 @@ Qwen3.8-27B-Coder390-EfficientThink-Q3LynnStyle-MTP.gguf
 
 两者均使用 Metal 全层卸载、Flash Attention、F16 KV、概率 MTP4、p_min 0.2、131072 项草稿词表、紧凑 Top-K 和已采用的小算子线程分配优化。原模型的完整词表和权重不变。
 
-32GB 从 8K 上下文开始；可显式选择 4K～16K，但更长窗口不能由本机 M2 Ultra 的测试替代实机验收。输出预算较短，复杂思考可能被截断，需要结合任务调整。默认文本模式不加载视觉投影，避免额外占用。
+32GB 从 8K 上下文开始；可显式选择 4K～16K，但更长窗口不能由本机 M2 Ultra 的测试替代实机验收。输出预算较短，复杂思考可能被截断，需要结合任务调整；API 调用方或界面中已有的个人设置可以覆盖默认输出预算。默认文本模式不加载视觉投影，避免额外占用。
 
 ```sh
 python3 coder390.py run --model "/路径/模型.gguf" --profile compact32 --context 8192
